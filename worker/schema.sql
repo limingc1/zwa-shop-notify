@@ -1,0 +1,16 @@
+-- D1 schema：先执行这个再部署数据
+CREATE TABLE IF NOT EXISTS kv (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notified (
+  end_ts INTEGER PRIMARY KEY,
+  sent_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts REAL NOT NULL,
+  event TEXT NOT NULL,
+  ok INTEGER,
+  detail TEXT
+);

@@ -1,0 +1,9 @@
+# 本地私密数据：凭据/历史/二维码/真实密钥，绝不提交
+.env
+data/
+可信IP.txt
+
+# 构建产物与临时文件
+worker/dist/
+__pycache__/
+*.pyc

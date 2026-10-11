@@ -1,0 +1,17 @@
+name = "zwa-shop-notify"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+# 自定义域名（workers.dev 在国内被干扰，走账户内已激活域名）
+routes = [
+  { pattern = "zwa.lim1ng.bond", custom_domain = true }
+]
+
+# 每天 UTC 00:05 = 北京时间 08:05（掌瓦商店 08:00 刷新后）
+[triggers]
+crons = ["5 0 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "zwa-notify"
+database_id = "4bd3333e-4589-4b1c-8341-2c1231ebab46"
