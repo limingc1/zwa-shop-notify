@@ -370,43 +370,76 @@ async function wecomSend(title: string, text: string, env: Env): Promise<boolean
 
 /* ---------------- 主流程 ---------------- */
 
-async function runCycle(env: Env, force = false, notify = true): Promise<string> {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 查商店（带当场退避重试 + 过期静默续期）。
+ * 掌瓦 8 点整刷新时全国并发，201「人数过多」是瞬时拥堵，等 10s/30s 再试大概率能过。
+ * 返回 blocks；失败时抛出 {authFailed, msg} 标记的对象。
+ */
+async function fetchStoreWithRetry(env: Env, bundle: Bundle): Promise<unknown[]> {
+  let blocks: unknown[] | null = null;
+  let lastMsg = "";
+  for (let i = 0; i < 3; i++) {
+    try {
+      try {
+        blocks = await getStore(bundle.mval);
+      } catch (e) {
+        if (!(e instanceof MvalError) || !e.authExpired) throw e;
+        // 登录过期 → 用 QQ token 静默重兑一次（重兑失败=必须人工扫码）
+        let fresh: Creds;
+        try {
+          fresh = await renewWithQQ(bundle.qq);
+        } catch (e2) {
+          throw { authFailed: true, msg: String(e2) };
+        }
+        blocks = await getStore(fresh); // 这里若是瞬时错误会走外层重试
+        bundle.mval = fresh;
+        await saveCreds(bundle, env);
+        await log(env, "auto_renew", true, "");
+      }
+      return blocks!;
+    } catch (e) {
+      if (e && typeof e === "object" && "authFailed" in e) throw e;
+      const err = e as MvalError;
+      lastMsg = err instanceof MvalError ? `code=${err.code} ${err.message}` : String(err);
+      await log(env, "store_retry", false, `第${i + 1}次失败：${lastMsg}`);
+      if (i < 2) await sleep((i === 0 ? 10 : 30) * 1000);
+    }
+  }
+  throw { authFailed: false, msg: lastMsg || "未知错误" };
+}
+
+async function runCycle(env: Env, force = false, notify = true, alertOnFail = true): Promise<string> {
   const bundle = await loadCreds(env);
   if (!bundle) { await log(env, "run", false, "no creds"); return "无凭据：先运行 import-creds"; }
 
   let blocks: unknown[] | null = null;
   try {
-    blocks = await getStore(bundle.mval);
+    blocks = await fetchStoreWithRetry(env, bundle);
   } catch (e) {
-    const err = e as MvalError;
-    if (err.authExpired) {
-      // 分层续期：先静默重兑，失败才要求扫码（报丧走独立推送通道）
-      try {
-        const fresh = await renewWithQQ(bundle.qq);
-        const probe = await getStore(fresh);
-        bundle.mval = fresh;
-        await saveCreds(bundle, env);
-        await log(env, "auto_renew", true, "");
-        blocks = probe;
-      } catch (e2) {
-        await log(env, "auto_renew", false, String(e2));
-        if (notify) {
-          const link = await makeReauthLink(env);
-          await pushSend("掌瓦商店通知·需重新授权",
-            `登录态过期且静默续期失败。\n\n` +
-            `📱 **复制下面链接，用手机浏览器打开**（微信内置浏览器会拦截，别在微信里点）：\n\n` +
-            `\`${link}\`\n\n` +
-            `页面出二维码后：截屏 → QQ 扫一扫 → 相册选截图 → 确认。\n` +
-            `续期成功后会自动补推今天的商店。链接 30 分钟内有效。`, env);
-        }
-        return "已过期且重兑失败" + (notify ? "，已发手机续期链接" : "");
+    const { authFailed, msg } = e as { authFailed: boolean; msg: string };
+    if (authFailed) {
+      // 需人工扫码：当天只提醒一次（多补偿窗口防重复），且立即提醒不等最后窗口
+      const dayKey = "reauth_alerted_" + new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+      const already = await env.DB.prepare("SELECT 1 FROM kv WHERE key=?").bind(dayKey).first();
+      if (notify && !already) {
+        await env.DB.prepare("INSERT OR IGNORE INTO kv (key,value) VALUES (?,?)").bind(dayKey, "1").run();
+        const link = await makeReauthLink(env);
+        await pushSend("掌瓦商店通知·需重新授权",
+          `登录态过期且静默续期失败。\n\n` +
+          `📱 **复制下面链接，用手机浏览器打开**（微信内置浏览器会拦截，别在微信里点）：\n\n` +
+          `\`${link}\`\n\n` +
+          `页面出二维码后：截屏 → QQ 扫一扫 → 相册选截图 → 确认。\n` +
+          `续期成功后会自动补推今天的商店。链接 30 分钟内有效。`, env);
       }
-    } else {
-      await log(env, "run", false, `store: ${err.message}`);
-      if (notify)
-        await pushSend("掌瓦商店通知·故障", `商店查询失败（code=${err.code}）：${err.message}`, env);
-      return `商店查询失败：${err.message}`;
+      return "已过期且重兑失败，待扫码" + (notify && !already ? "，已发续期链接" : "");
     }
+    // 瞬时/接口故障：只在当天最后一个补偿窗口报丧，避免三连发
+    await log(env, "run", false, `store: ${msg}`);
+    if (notify && alertOnFail)
+      await pushSend("掌瓦商店通知·故障", `商店查询多次失败（今日 08:20/09:30/12:00 三个窗口均失败）：${msg}`, env);
+    return `商店查询失败：${msg}`;
   }
 
   const typed = (blocks || []) as Record<string, unknown>[];
@@ -635,8 +668,10 @@ async function makeReauthLink(env: Env, origin?: string): Promise<string> {
 }
 
 export default {
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(runCycle(env));
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    // 三个窗口（UTC）：00:20 主（北京08:20）→ 01:30 → 04:00（北京12:00，最后才报丧）
+    const hour = new Date(event.scheduledTime).getUTCHours();
+    ctx.waitUntil(runCycle(env, false, true, hour === 4));
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
