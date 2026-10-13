@@ -289,6 +289,7 @@ async function robotSendNews(articles: Article[], env: Env): Promise<boolean> {
   return d.errcode === 0;
 }
 
+/** 方案B：全部 8 件商品各一张图卡（news 上限 8 张，每日4+王国4 刚好） */
 function buildArticles(blocks: Record<string, unknown>[], watch: string[], url: string): Article[] {
   const arts: Article[] = [];
   for (const blk of blocks) {
@@ -470,9 +471,11 @@ async function runCycle(env: Env, force = false, notify = true, alertOnFail = tr
   return ok ? "推送成功" : "推送失败（所有通道均未受理）";
 }
 
-/** 商店推送优先级：机器人图文卡片 → 机器人文本 → Server酱 */
+/** 方案B：先发一行文本（锁屏横幅/列表摘要取它），再发 8 张全图卡片 */
 async function pushShop(title: string, body: string, articles: Article[], env: Env): Promise<boolean> {
   if (env.WECOM_ROBOT_KEY && articles.length) {
+    // news 消息的横幅只取首卡标题（=某件皮肤名，无意义），故前置一行文本承载摘要信息
+    await robotSend(`${title}\n（今日商店见下方卡片 · 点卡片看大图）`, env);
     if (await robotSendNews(articles, env)) return true;
     await log(env, "news_fallback", false, "图文失败，降级文本");
   }
