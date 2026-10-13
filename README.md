@@ -95,6 +95,74 @@ python -m notify.deploy watch <WORKER_URL>
 - 续期链接 / 网页版均为随机 token 鉴权，请勿转发给他人；
 - 仅限查询本人账号，不做多用户服务、不商用、不高频轮询。
 
+## 自己搭建（fork 后必读）
+
+### 你需要准备什么
+
+| 材料 | 要求 | 难度 |
+|---|---|---|
+| 一台有 Python + Node 的电脑 | 只做首次登录和部署，之后可弃用 | ★★ |
+| Cloudflare 免费账号 | 注册即用，无需信用卡 | ★ |
+| 企业微信群机器人 | 手机装企业微信 App → 建群 → 群机器人 → 复制 Webhook（免认证） | ★ |
+| Server酱 SendKey（可选备用） | sct.ftqq.com 微信扫码即得 | ★ |
+| 你自己的 QQ | 扫码授权掌瓦登录 | — |
+
+### Fork 之后必须改的地方（不改会部署失败或打到别人的服务上）
+
+1. **`worker/wrangler.toml`**：
+   - `name`：改成你自己的 Worker 名；
+   - `routes` 里的自定义域名 `zwa.lim1ng.bond`：**删掉这两行**（那是作者的域名）。Workers 免费版自带的 `https://<名字>.<你的子域>.workers.dev` 就能用，只是国内手机访问 workers.dev 可能不稳定；若你有自己的已激活 Cloudflare 域名，换成它更好；
+   - `database_id`：建库后替换成你自己的（见下）。
+2. **`worker/src/index.ts` 顶部 `SELF_URL`**：改成你的 Worker 访问地址。
+3. **`worker/src/index.ts` 的 `WW_verify_*.txt` 路由**：整段删掉（作者的企业微信域名验证，与你无关）。
+4. **`.env`**：按 `.env.example` 建一份，填你自己的 SENDKEY；`CRED_KEY`/`TRIGGER_TOKEN` 用 `python -m notify.deploy keypair` 生成。
+
+### 部署步骤（约 20 分钟）
+
+```bash
+# 1. 克隆并安装依赖
+git clone https://github.com/<你的用户名>/zwa-shop-notify.git
+cd zwa-shop-notify && pip install -r requirements.txt
+
+# 2. 登录 Cloudflare（浏览器授权）并建数据库
+cd worker
+npx wrangler login
+npx wrangler d1 create zwa-notify          # 把返回的 database_id 填进 wrangler.toml
+npx wrangler d1 execute zwa-notify --remote --file=schema.sql
+
+# 3. 写入密钥（每条回车后粘贴值）
+npx wrangler secret put SENDKEY
+npx wrangler secret put WECOM_ROBOT_KEY    # 企业微信机器人 Webhook 里 key= 后面那串
+npx wrangler secret put TRIGGER_TOKEN      # keypair 生成
+npx wrangler secret put CRED_KEY           # keypair 生成
+
+# 4. 部署 Worker
+npx wrangler deploy                        # 记下输出的 workers.dev 地址，回填 index.ts 的 SELF_URL 再部署一次
+
+# 5. 首次登录掌瓦（唯一需要电脑扫码的环节）
+cd ..
+python -m notify.cli login                 # 手机QQ扫 data/qrcode.png → 自动验证商店
+
+# 6. 把凭据推上云端
+python -m notify.deploy creds https://<你的worker地址>
+python -m notify.deploy watch https://<你的worker地址>
+
+# 7. 手动触发一次，群里收到卡片即部署成功
+python -m notify.deploy run https://<你的worker地址>
+```
+
+### 没有电脑？纯手机首次登录（进阶，未完全验证）
+
+首次登录也可以用手机浏览器打开 `https://<你的worker地址>/reauth-link` 思路的变体：
+本项目自带手机扫码续期页（`/reauth/page`），理论上首次登录同样可用——先部署好 Worker（步骤 1-4 可用手机 Termux 完成），再在手机上打开续期链接扫码即可入库。**此路径作者未实测**，建议首次用电脑跑一遍，之后全靠手机。
+
+### 常见问题
+
+- **`wrangler deploy` 报 `fetch failed`**：本机代理软件导致 Node 连不上 Cloudflare。设置 `NODE_OPTIONS=--use-env-proxy` 与 `HTTPS_PROXY`（参考 deploy.bat），或临时关闭代理软件；
+- **8 点推送收到"人数过多"故障**：正常，系统会在 09:30 / 12:00 自动补偿重试；
+- **登录态多久要扫一次码**：作者实测本机约 1 周，静默重兑可显著延长，因人而异；
+- **想改推送时间**：`wrangler.toml` 的 `crons` 是 UTC（北京时间减 8 小时）。
+
 ## 已知限制
 
 - 逆向协议可能随时失效（字段层级变化、风控策略调整）；
