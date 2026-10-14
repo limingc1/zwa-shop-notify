@@ -471,12 +471,14 @@ async function runCycle(env: Env, force = false, notify = true, alertOnFail = tr
   return ok ? "推送成功" : "推送失败（所有通道均未受理）";
 }
 
-/** 方案B：先发一行文本（锁屏横幅/列表摘要取它），再发 8 张全图卡片 */
+/** 方案B（顺序调整）：先发 8 张全图卡片，最后发文本摘要——
+ *  手机通知栏只显示最新一条消息，让摘要垫底才能被看见 */
 async function pushShop(title: string, body: string, articles: Article[], env: Env): Promise<boolean> {
   if (env.WECOM_ROBOT_KEY && articles.length) {
-    // news 消息的横幅只取首卡标题（=某件皮肤名，无意义），故前置一行文本承载摘要信息
-    await robotSend(`${title}\n（今日商店见下方卡片 · 点卡片看大图）`, env);
-    if (await robotSendNews(articles, env)) return true;
+    if (await robotSendNews(articles, env)) {
+      await robotSend(`${title}\n（今日商店见上方卡片 · 点卡片看大图）`, env);
+      return true;
+    }
     await log(env, "news_fallback", false, "图文失败，降级文本");
   }
   return pushSend(title, body, env);
